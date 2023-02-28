@@ -1,20 +1,71 @@
-from django.shortcuts import render
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from django.utils import timezone
 import dateparser
-
-# Create your views here.
 from rest_framework import generics
-from .models import News
-from .serializers import NewsSerializer
+from .models import News, Post, Comment
+from .serializers import NewsSerializer, PostSerializer, CommentSerializer, UserSerializer
 import requests
 from bs4 import BeautifulSoup
 import json
 from rest_framework import status
+from rest_framework import viewsets, permissions
+from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
+from django.contrib.auth.models import User
 
 
-# from urllib.parse import urljoin
+class UserViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+
+class PostViewSet(viewsets.ModelViewSet):
+    queryset = Post.objects.order_by('-created_at')
+    serializer_class = PostSerializer
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    throttle_classes = [AnonRateThrottle, UserRateThrottle]
+    search_fields = ['Post__title']
+    ordering_fields = ['created_at', ]
+
+    def perform_create(self, serializer):
+        serializer.save(author=self.request.user)
+
+    @action(detail=True, methods=['get'])
+    def comments(self, request, pk=None):
+        post = self.get_object()
+        paginator = PageNumberPagination()
+        paginator.page_size = 10
+        comments = post.comments.all()
+        result_page = paginator.paginate_queryset(comments, request)
+        serializer = CommentSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class CommentViewSet(viewsets.ModelViewSet):
+    queryset = Comment.objects.all()
+    serializer_class = CommentSerializer
+    # permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    throttle_classes = [AnonRateThrottle, UserRateThrottle]
+
+    def perform_create(self, serializer):
+        serializer.save(author=self.request.user)
+
+
+class CommentUserView(generics.ListCreateAPIView):
+    queryset = Comment.objects.all()
+    serializer_class = CommentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Comment.objects.all().filter(user=self.request.user)
+
+    def delete(self, request, *args, **kwargs):
+        Comment.objects.all().filter(user=self.request.user).delete()
+        return Response("ok:Deleted")
 
 
 def goalDesc(relative_url):
@@ -31,6 +82,8 @@ def goalDesc(relative_url):
 
 class NewsList(generics.ListCreateAPIView):
     serializer_class = NewsSerializer
+    pagination_class = PageNumberPagination
+    pagination_class.page_size = 10
 
     def get_queryset(self):
         queryset = News.objects.all().order_by("-pub_date")
@@ -41,10 +94,12 @@ class NewsList(generics.ListCreateAPIView):
 
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
-        count = queryset.count()
+        page = self.paginate_queryset(queryset)  # paginate the queryset
+        serializer = self.get_serializer(page, many=True)
+        count = len(serializer.data)
         data = {"count": count, "results": serializer.data}
         return Response(data)
+        # return self.get_paginated_response(serializer.data)  # return the paginated response
 
 
 class NewsDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -306,20 +361,19 @@ class dawriSaudi(APIView):
             soup = BeautifulSoup(response.content, "html.parser")
 
             articles = soup.find("div", class_="news-detail-main")
-            title=articles.find('h3').text.strip()
+            title = articles.find('h3').text.strip()
             # image=articles.find('div',class_='banner').text.strip()
             style = soup.select_one('.banner')['style']
             image = [link.strip("')") for link in style.split("url('")[1:]]
-            pub_date=article.find('span').text.strip()
+            pub_date = article.find('span').text.strip()
             try:
                 desc = soup.find_all("p")
                 # Extract text from each paragraph and join them
                 description = ' '.join([p.text.strip() for p in desc])
-                print('desc_short : '+description)
+                print('desc_short : ' + description)
                 #  return desc_text
             except AttributeError:
                 print(f"No description found for {url}")
-
 
             news_obj, created = News.objects.get_or_create(
                 link=link,

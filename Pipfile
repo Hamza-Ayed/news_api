@@ -6,6 +6,7 @@ name = "pypi"
 [packages]
 dateparser = "*"
 bs4 = "*"
+djoser = "*"
 
 [dev-packages]
 
